@@ -53,6 +53,30 @@ class ClipboardHistory {
     }
 }
 
+class BlueTableRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        if self.selectionHighlightStyle != .none {
+            let selectionRect = NSInsetRect(self.bounds, 0, 0)
+            NSColor(calibratedRed: 0, green: 0, blue: 1, alpha: 1).setFill()
+            selectionRect.fill()
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        // Add white bottom border for non-selected items
+        if !isSelected {
+            NSColor.white.setStroke()
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: bounds.minX, y: bounds.maxY))
+            path.line(to: NSPoint(x: bounds.maxX, y: bounds.maxY))
+            path.lineWidth = 1.0
+            path.stroke()
+        }
+    }
+}
+
 class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     let searchField = NSTextField()
     let tableView = NSTableView()
@@ -95,8 +119,8 @@ class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDe
         tableView.addTableColumn(column)
         tableView.headerView = nil
         tableView.intercellSpacing = NSSize(width: 0, height: 1)
-        tableView.gridStyleMask = .solidHorizontalGridLineMask
-        tableView.gridColor = .white
+        // tableView.gridStyleMask = .solidHorizontalGridLineMask
+        // tableView.gridColor = .white
         tableView.backgroundColor = .clear
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.dataSource = self
@@ -149,6 +173,20 @@ class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDe
                                      options: [.usesLineFragmentOrigin, .usesFontLeading],
                                      attributes: attrs)
         return ceil(rect.height) + 4
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let rowView = BlueTableRowView()
+        rowView.selectionHighlightStyle = .regular
+        return rowView
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        return true
+    }
+
+    func tableView(_ tableView: NSTableView, selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet) -> IndexSet {
+        return proposedSelectionIndexes
     }
 
     func controlTextDidChange(_ obj: Notification) { reloadData() }
