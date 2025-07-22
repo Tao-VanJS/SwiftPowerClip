@@ -28,6 +28,7 @@ class FileHistory {
         } else {
             items = []
         }
+        items.reverse()
     }
 
     func paste(_ text: String) {
