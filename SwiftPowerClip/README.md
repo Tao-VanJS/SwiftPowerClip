@@ -47,3 +47,9 @@ To start SwiftPowerClip automatically when you log in:
 3. Click the **+** button and choose `SwiftPowerClip.app` from the Applications folder.
 4. The app will now launch on every login and your clipboard history will be available via **Ctrl+V**.
 
+## Clean up clipboard history
+
+```bash
+defaults write com.example.swiftpowerclip SwiftPowerClipHistory -array
+defaults read com.example.swiftpowerclip SwiftPowerClipHistory
+```
