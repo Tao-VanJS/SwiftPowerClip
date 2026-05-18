@@ -39,6 +39,13 @@ class ClipboardHistory {
         UserDefaults.standard.set(items, forKey: defaultsKey)
     }
 
+    func removeItems(longerThan maxLength: Int) -> Int {
+        let previousCount = items.count
+        items.removeAll { $0.count > maxLength }
+        save()
+        return previousCount - items.count
+    }
+
     func paste(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -80,10 +87,12 @@ class BlueTableRowView: NSTableRowView {
 class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     let searchField = NSTextField()
     let tableView = NSTableView()
+    let cleanupMessageLabel = NSTextField(labelWithString: "")
     var scrollView: NSScrollView!
     var filtered: [String] = []
     var selected = 0
     var foregroundApp: NSRunningApplication?
+    private var cleanupMessageWorkItem: DispatchWorkItem?
 
     override func loadView() { view = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400)) }
 
@@ -127,6 +136,19 @@ class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDe
         tableView.delegate = self
 
         scrollView.documentView = tableView
+
+        cleanupMessageLabel.isHidden = true
+        cleanupMessageLabel.isEditable = false
+        cleanupMessageLabel.isSelectable = false
+        cleanupMessageLabel.isBordered = false
+        cleanupMessageLabel.drawsBackground = false
+        cleanupMessageLabel.alignment = .center
+        cleanupMessageLabel.font = NSFont.systemFont(ofSize: 18, weight: .medium)
+        cleanupMessageLabel.textColor = .white
+        cleanupMessageLabel.wantsLayer = true
+        cleanupMessageLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.85).cgColor
+        cleanupMessageLabel.layer?.cornerRadius = 8
+        view.addSubview(cleanupMessageLabel)
     }
 
     func show() {
@@ -138,9 +160,21 @@ class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDe
         searchField.becomeFirstResponder()
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        layoutCleanupMessage()
+    }
+
     func hide() {
+        cleanupMessageLabel.isHidden = true
         if let app = foregroundApp { app.activate(options: []) }
         view.window?.orderOut(nil)
+    }
+
+    func cleanUpLongClipboardItems() {
+        let cleanedCount = ClipboardHistory.shared.removeItems(longerThan: 100)
+        reloadData()
+        showCleanupMessage(cleanedCount: cleanedCount)
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
@@ -212,7 +246,47 @@ class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDe
         if !filtered.isEmpty { tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
 
+    private func showCleanupMessage(cleanedCount: Int) {
+        cleanupMessageWorkItem?.cancel()
+
+        if cleanedCount == 1 {
+            cleanupMessageLabel.stringValue = "Cleaned up 1 entry over 100 characters"
+        } else {
+            cleanupMessageLabel.stringValue = "Cleaned up \(cleanedCount) entries over 100 characters"
+        }
+
+        layoutCleanupMessage()
+        cleanupMessageLabel.alphaValue = 1
+        cleanupMessageLabel.isHidden = false
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                self.cleanupMessageLabel.animator().alphaValue = 0
+            } completionHandler: {
+                self.cleanupMessageLabel.isHidden = true
+                self.cleanupMessageLabel.alphaValue = 1
+            }
+        }
+        cleanupMessageWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
+    }
+
+    private func layoutCleanupMessage() {
+        let width = min(view.bounds.width - 40, 440)
+        cleanupMessageLabel.frame = NSRect(x: (view.bounds.width - width) / 2,
+                                           y: (view.bounds.height - 48) / 2,
+                                           width: width,
+                                           height: 48)
+    }
+
     override func keyDown(with event: NSEvent) {
+        if isCleanUpShortcut(event) {
+            cleanUpLongClipboardItems()
+            return
+        }
+
         switch event.keyCode {
         case 53: // esc
             hide()
@@ -227,6 +301,11 @@ class ClipViewController: NSViewController, NSTableViewDataSource, NSTableViewDe
         default:
             super.keyDown(with: event)
         }
+    }
+
+    func isCleanUpShortcut(_ event: NSEvent) -> Bool {
+        let relevantFlags = event.modifierFlags.intersection([.option, .command, .control, .shift])
+        return event.keyCode == UInt16(kVK_ANSI_C) && relevantFlags == .control
     }
 
     private func move(_ d: Int) {
@@ -253,12 +332,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var controller: ClipViewController!
     var hotKeyRef: EventHotKeyRef?
+    var localKeyMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        ClipboardHistory.shared
+        _ = ClipboardHistory.shared
         setupWindow()
         setupHotkey()
+        setupLocalKeyMonitor()
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let localKeyMonitor = localKeyMonitor {
+            NSEvent.removeMonitor(localKeyMonitor)
+        }
     }
 
     private func setupWindow() {
@@ -272,7 +359,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotkey() {
-        var hotKeyID = EventHotKeyID(signature: OSType(0x5350434C), id: 1)
+        let hotKeyID = EventHotKeyID(signature: OSType(0x5350434C), id: 1)
         let ctrlMask = UInt32(controlKey)
         RegisterEventHotKey(UInt32(kVK_ANSI_V), ctrlMask, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
 
@@ -284,6 +371,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             delegate.handleHotKey(id: hk.id)
             return noErr
         }, 1, &eventSpec, UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()), nil)
+    }
+
+    private func setupLocalKeyMonitor() {
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self,
+                  self.window.isVisible,
+                  NSApp.isActive else { return event }
+
+            if self.controller.isCleanUpShortcut(event) {
+                self.controller.cleanUpLongClipboardItems()
+                return nil
+            }
+
+            return event
+        }
     }
 
     private func handleHotKey(id: UInt32) {
